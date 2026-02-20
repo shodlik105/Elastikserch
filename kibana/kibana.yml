@@ -1,0 +1,22 @@
+server.host: "0.0.0.0"
+server.port: 5601
+
+logging:
+  appenders:
+    file:
+      type: file
+      fileName: /var/log/kibana/kibana.log
+      layout:
+        type: json
+  root:
+    appenders:
+      - default
+      - file
+pid.file: /run/kibana/kibana.pid
+
+
+# This section was automatically generated during setup.
+elasticsearch.hosts: [https://172.16.80.10:9200]
+elasticsearch.serviceAccountToken: AAEAAWVsYXN0aWMva2liYW5hL2Vucm9sbC1wcm9jZXNzLXRva2VuLTE3NzE1MDQ0NjczOTA6SG1BbHJyOERURHFlcTNYSldib282UQ
+elasticsearch.ssl.certificateAuthorities: [/var/lib/kibana/ca_1771504468616.crt]
+xpack.fleet.outputs: [{id: fleet-default-output, name: default, is_default: true, is_default_monitoring: true, type: elasticsearch, hosts: [https://172.16.80.10:9200], ca_trusted_fingerprint: bbd7527affd80abbd0580137a8a4fc22bee08b6f0c078d5f1d734f6849400190}]

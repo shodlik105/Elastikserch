@@ -1,0 +1,285 @@
+ELASTICSEARCH 3-NODE CLUSTER + KIBANA + NFS SNAPSHOTS (SLM)
+INSTALL / DEPLOY STAGES (Ubuntu 24.04 / Debian-like)
+
+TOPOLOGY
+- es-1: 172.16.80.10
+- es-2: 172.16.80.11
+- es-3: 172.16.80.12
+- kibana: 172.16.80.13
+
+PORTS
+- ES HTTP: 9200 (HTTPS + Basic auth)
+- ES Transport: 9300 (node-to-node, TLS)
+- Kibana: 5601
+
+============================================================
+STAGE 0) PRE-CHECK (ALL NODES)
+============================================================
+0.1) Hostname tekshirish
+  hostnamectl set-hostname es-1|es-2|es-3|kibana
+
+0.2) /etc/hosts (ixtiyoriy, qulaylik uchun)
+  172.16.80.10 es-1
+  172.16.80.11 es-2
+  172.16.80.12 es-3
+  172.16.80.13 kibana
+
+0.3) System time (tavsiya)
+  timedatectl
+  (NTP yoqilgan bo‘lsin)
+
+============================================================
+STAGE 1) OS TUNING (ES NODES ONLY: es-1/es-2/es-3)
+============================================================
+1.1) vm.max_map_count (bootstrap check)
+  echo "vm.max_map_count=262144" | sudo tee /etc/sysctl.d/99-elastic.conf
+  sudo sysctl -p /etc/sysctl.d/99-elastic.conf
+
+1.2) Swap OFF
+  sudo swapoff -a
+  sudo sed -i.bak '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+============================================================
+STAGE 2) INSTALL ELASTICSEARCH (ES NODES)
+============================================================
+2.1) Repo + key
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates gnupg apt-transport-https
+
+  curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch \
+    | sudo gpg --dearmor -o /usr/share/keyrings/elastic-keyring.gpg
+
+  echo "deb [signed-by=/usr/share/keyrings/elastic-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main" \
+    | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+
+  sudo apt-get update
+
+2.2) Elasticsearch install
+  sudo apt-get install -y elasticsearch
+
+============================================================
+STAGE 3) CONFIGURE ELASTICSEARCH (ES-1 FIRST)
+============================================================
+3.1) ES-1 config (/etc/elasticsearch/elasticsearch.yml)
+  cluster.name: es-kluster
+  node.name: es-1
+  node.roles: [ master, data, ingest ]
+
+  network.host: 0.0.0.0
+  network.publish_host: 172.16.80.10
+
+  http.port: 9200
+  transport.port: 9300
+  transport.publish_host: 172.16.80.10
+
+  discovery.seed_hosts:
+    - "172.16.80.10:9300"
+    - "172.16.80.11:9300"
+    - "172.16.80.12:9300"
+
+  path.data: /var/lib/elasticsearch
+  path.logs: /var/log/elasticsearch
+  path.repo: ["/snapshots"]
+
+  xpack.security.enabled: true
+  xpack.security.enrollment.enabled: true
+
+  xpack.security.http.ssl:
+    enabled: true
+    keystore.path: certs/http.p12
+
+  xpack.security.transport.ssl:
+    enabled: true
+    verification_mode: certificate
+    keystore.path: certs/transport.p12
+    truststore.path: certs/transport.p12
+
+3.2) Start ES-1
+  sudo systemctl enable --now elasticsearch
+  sudo systemctl status elasticsearch --no-pager -l
+
+3.3) ES-1 password (IMPORTANT)
+  Install paytida console’da elastic password chiqadi.
+  Agar saqlanmagan bo‘lsa:
+    sudo /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic
+
+3.4) Health check (ES-1)
+  PASS='ELASTIC_PASSWORD'
+  curl -k -u "elastic:$PASS" https://127.0.0.1:9200
+
+============================================================
+STAGE 4) ADD ES-2 and ES-3 (JOIN CLUSTER)
+============================================================
+4.1) ES-2 /etc/elasticsearch/elasticsearch.yml
+  cluster.name: es-kluster
+  node.name: es-2
+  node.roles: [ master, data, ingest ]
+  network.host: 0.0.0.0
+  network.publish_host: 172.16.80.11
+  http.port: 9200
+  transport.port: 9300
+  transport.publish_host: 172.16.80.11
+
+  discovery.seed_hosts:
+    - "172.16.80.10:9300"
+    - "172.16.80.11:9300"
+    - "172.16.80.12:9300"
+
+  path.data: /var/lib/elasticsearch
+  path.logs: /var/log/elasticsearch
+  path.repo: ["/snapshots"]
+
+  xpack.security.enabled: true
+  xpack.security.enrollment.enabled: true
+
+  xpack.security.http.ssl:
+    enabled: true
+    keystore.path: certs/http.p12
+  xpack.security.transport.ssl:
+    enabled: true
+    verification_mode: certificate
+    keystore.path: certs/transport.p12
+    truststore.path: certs/transport.p12
+
+  sudo systemctl enable --now elasticsearch
+
+4.2) ES-3 /etc/elasticsearch/elasticsearch.yml
+  (xuddi es-2 kabi, faqat IP 172.16.80.12 va node.name=es-3)
+
+  sudo systemctl enable --now elasticsearch
+
+4.3) 9300 port checks
+  On es-1:
+    sudo ss -lntp | egrep ':9300|:9200'
+    nc -zv 172.16.80.11 9300
+    nc -zv 172.16.80.12 9300
+
+4.4) Cluster health
+  PASS='ELASTIC_PASSWORD'
+  curl -k -u "elastic:$PASS" "https://172.16.80.10:9200/_cat/nodes?v"
+  curl -k -u "elastic:$PASS" "https://172.16.80.10:9200/_cluster/health?pretty"
+  curl -k -u "elastic:$PASS" "https://172.16.80.10:9200/_cat/master?v"
+
+NOTE:
+- cluster.initial_master_nodes faqat birinchi bootstrap uchun ishlatiladi.
+- Cluster tik bo‘lgach, config’dan olib tashlanadi.
+
+============================================================
+STAGE 5) INSTALL + ENROLL KIBANA (kibana node)
+============================================================
+5.1) Agar curl SSL issuer muammo bo‘lsa (Fortinet/Proxy CA)
+  - fortinet-root.crt ni kibana’ga scp qiling
+  - keyin:
+    sudo mv fortinet-root.crt /usr/local/share/ca-certificates/
+    sudo chmod 644 /usr/local/share/ca-certificates/fortinet-root.crt
+    sudo update-ca-certificates
+  - tekshir:
+    curl -fsSLI https://artifacts.elastic.co | head
+
+5.2) Kibana install
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates gnupg apt-transport-https
+
+  curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch \
+    | sudo gpg --dearmor -o /usr/share/keyrings/elastic-keyring.gpg
+
+  echo "deb [signed-by=/usr/share/keyrings/elastic-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main" \
+    | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+
+  sudo apt-get update
+  sudo apt-get install -y kibana
+
+5.3) Enrollment token (ES-1)
+  sudo /usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token -s kibana
+
+5.4) Kibana enroll (kibana node)
+  sudo /usr/share/kibana/bin/kibana-setup --enrollment-token '<TOKEN>'
+
+5.5) Kibana listen external
+  Edit /etc/kibana/kibana.yml:
+    server.host: "0.0.0.0"
+    server.port: 5601
+
+  sudo systemctl enable --now kibana
+  sudo ss -lntp | grep 5601
+
+============================================================
+STAGE 6) SNAPSHOT REPO via NFS (ALL ES NODES)
+============================================================
+6.1) NFS server (es-1)
+  Directory:
+    /srv/es-snapshots
+
+  Export:
+    /srv/es-snapshots 172.16.80.0/24(rw,sync,no_subtree_check,no_root_squash)
+
+6.2) NFS client (es-1/es-2/es-3)
+  sudo apt-get install -y nfs-common
+  sudo mkdir -p /snapshots
+  sudo mount -t nfs 172.16.80.10:/srv/es-snapshots /snapshots
+
+  Persist after reboot:
+    echo "172.16.80.10:/srv/es-snapshots /snapshots nfs defaults,_netdev 0 0" | sudo tee -a /etc/fstab
+
+  Verify shared:
+    touch /snapshots/TEST_FROM_$(hostname)
+    ls -l /snapshots | tail
+
+6.3) Ensure ES knows repo path (ALL nodes)
+  In elasticsearch.yml:
+    path.repo: ["/snapshots"]
+
+  Restart ES on all nodes:
+    sudo systemctl restart elasticsearch
+
+6.4) Create repository (ES-1)
+  PASS='ELASTIC_PASSWORD'
+  curl -k -u "elastic:$PASS" -X PUT "https://172.16.80.10:9200/_snapshot/local_repo" \
+    -H 'Content-Type: application/json' \
+    -d '{"type":"fs","settings":{"location":"/snapshots","compress":true}}'
+
+  Verify:
+    curl -k -u "elastic:$PASS" -X POST "https://172.16.80.10:9200/_snapshot/local_repo/_verify?pretty"
+
+============================================================
+STAGE 7) SLM (DAILY POLICY)
+============================================================
+7.1) Create SLM policy (ES-1)
+  PASS='ELASTIC_PASSWORD'
+  curl -k -u "elastic:$PASS" -X PUT "https://172.16.80.10:9200/_slm/policy/daily-nfs" \
+    -H 'Content-Type: application/json' -d '{
+    "schedule": "0 30 2 * * ?",
+    "name": "<daily-snap-{now/d{yyyy.MM.dd|UTC}}>",
+    "repository": "local_repo",
+    "config": { "indices": ["*"], "ignore_unavailable": true, "include_global_state": true },
+    "retention": { "expire_after": "7d", "min_count": 7, "max_count": 30 }
+  }'
+
+7.2) Status / test run
+  curl -k -u "elastic:$PASS" "https://172.16.80.10:9200/_slm/policy/daily-nfs?human&pretty"
+  curl -k -u "elastic:$PASS" -X POST "https://172.16.80.10:9200/_slm/policy/daily-nfs/_execute?pretty"
+  curl -k -u "elastic:$PASS" "https://172.16.80.10:9200/_cat/snapshots/local_repo?v&s=start_time:desc" | head -n 20
+
+============================================================
+STAGE 8) POST-STEPS / HARDENING (RECOMMENDED)
+============================================================
+8.1) Remove cluster.initial_master_nodes (if you used it)
+  sudo sed -i '/^cluster\.initial_master_nodes:/d' /etc/elasticsearch/elasticsearch.yml
+  sudo systemctl restart elasticsearch
+
+8.2) Firewall (lab bo‘lsa ham minimal)
+  - 9200: faqat Kibana + admin IP’lar
+  - 9300: faqat ES node’lar (172.16.80.10/11/12)
+  - 5601: admin IP’lar yoki reverse-proxy orqali
+
+8.3) Secrets hygiene
+  - Gitga PAROL/TOKEN/CERT qo‘ymang.
+  - Kibana serviceAccountToken faqat serverda tursin.
+
+============================================================
+TROUBLESHOOT QUICK
+============================================================
+- 401 missing credentials: curl’da -u elastic:$PASS yo‘q yoki PASS noto‘g‘ri.
+- 503 "Cluster state not recovered yet": cluster master election muammosi; nodes soni/quorum tekshiring.
+- repo verify fails: fs repo uchun /snapshots barcha node’da bitta shared storage bo‘lishi shart (NFS).
+- Kibana 127.0.0.1:5601: server.host "0.0.0.0" qiling.
